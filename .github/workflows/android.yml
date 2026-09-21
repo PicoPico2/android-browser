@@ -19,16 +19,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.11.1'
-      - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v4
-        with:
-          # Override the action default so the removed legacy "tools" package is never requested.
-          packages: platform-tools
-      - name: Install Android SDK
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
       - name: Test and build debug APK
         run: gradle testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@v4

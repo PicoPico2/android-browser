@@ -44,7 +44,7 @@ gradle testDebugUnitTest assembleDebug
 
 ## GitHub Actions
 
-`main`へのpush、pull request、手動実行で `.github/workflows/android.yml` が `gradle/actions/setup-gradle@v5` を使ってGradle 8.11.1をセットアップし、単体テストとデバッグAPKビルドを行います。feature branchのpushは、pull requestと同じビルドを二重実行しません。実行ページの **Artifacts** から `private-browser-debug` を取得できます。
+`main`へのpush、pull request、手動実行で `.github/workflows/android.yml` がNode.js 24対応の `gradle/actions/setup-gradle@v6` を使ってGradle 8.11.1をセットアップし、単体テストとデバッグAPKビルドを行います。GitHubランナーにプリインストールされた `sdkmanager` を利用するため、廃止されたAndroid SDKの `tools` パッケージは要求しません。feature branchのpushは、pull requestと同じビルドを二重実行しません。実行ページの **Artifacts** から `private-browser-debug` を取得できます。
 
 ## プロフィール分離の仕組み
 
