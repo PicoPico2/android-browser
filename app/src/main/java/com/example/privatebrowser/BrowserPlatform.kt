@@ -23,6 +23,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 /** Activity-owned callbacks: never grant arbitrary web permissions or launch external intents. */
 internal class BrowserPlatform(private val activity: ComponentActivity) {
+    var altDown = false
+    var shiftDown = false
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var fullView: View? = null
     private var fullCallback: WebChromeClient.CustomViewCallback? = null
@@ -126,6 +128,48 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
     }
 
     fun installLinkMenu(view: WebView) {
+        var altGesture = false
+        var shiftGesture = false
+        var downX = 0f
+        var downY = 0f
+        var moved = false
+        val slop = android.view.ViewConfiguration.get(activity).scaledTouchSlop
+        view.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    altGesture = altDown || event.metaState and android.view.KeyEvent.META_ALT_ON != 0
+                    shiftGesture = shiftDown || event.metaState and android.view.KeyEvent.META_SHIFT_ON != 0
+                    downX = event.x; downY = event.y; moved = false
+                    false
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.x - downX) > slop || kotlin.math.abs(event.y - downY) > slop) moved = true
+                    false
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    val hit = view.hitTestResult
+                    val isLink = hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE || hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
+                    val intercept = altGesture && !moved && isLink
+                    altGesture = false
+                    if (intercept) {
+                        val foreground = shiftGesture
+                        val message = android.os.Handler(android.os.Looper.getMainLooper()) { msg ->
+                            val url = msg.data.getString("url") ?: if (hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE) hit.extra else null
+                            if (url != null && FilterRules.hostOf(url).isNotEmpty()) openLink?.invoke(url, foreground)
+                            true
+                        }.obtainMessage()
+                        view.requestFocusNodeHref(message)
+                        val cancel = android.view.MotionEvent.obtain(event)
+                        cancel.action = android.view.MotionEvent.ACTION_CANCEL
+                        view.onTouchEvent(cancel)
+                        cancel.recycle()
+                    }
+                    intercept
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> { altGesture = false; false }
+                else -> false
+            }
+        }
         view.setOnLongClickListener {
             val hit = view.hitTestResult
             when (hit.type) {

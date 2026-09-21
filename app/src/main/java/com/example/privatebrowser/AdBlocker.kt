@@ -32,6 +32,12 @@ internal object LocalRequestBlocker {
         "scorecardresearch.com",
         "taboola.com",
         "outbrain.com",
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googleadservices.com",
+        "adservice.google.com",
+        "ads.yahoo.com",
+        "ads-twitter.com",
     )
     private val strictDomains = standardDomains + setOf(
         "adnxs.com",
@@ -54,12 +60,13 @@ internal object LocalRequestBlocker {
     fun shouldBlock(url: String, level: BlockingLevel): Boolean {
         if (level == BlockingLevel.OFF) return false
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
-        val host = uri.host?.lowercase() ?: return false
+        val host = uri.host?.lowercase()?.trimEnd('.') ?: return false
         val path = uri.path.orEmpty().lowercase()
+        val domains = if (level == BlockingLevel.STRICT) strictDomains else standardDomains
+        if (domains.any { domain -> host.isDomainOrSubdomain(domain) }) return true
         if (essentialDomains.any { domain -> host.isDomainOrSubdomain(domain) }) return false
         if (listOf("captcha", "login", "signin", "oauth", "checkout", "payment").any(path::contains)) return false
-        val domains = if (level == BlockingLevel.STRICT) strictDomains else standardDomains
-        return domains.any { domain -> host.isDomainOrSubdomain(domain) }
+        return false
     }
 
     fun host(url: String): String = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
