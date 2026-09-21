@@ -13,6 +13,8 @@ import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -27,10 +29,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.io.ByteArrayInputStream
 
 private const val HOME_URL = "https://www.google.com"
 
@@ -60,6 +65,9 @@ private class BrowserTab(val id: Long, val webView: WebView) {
     var error by mutableStateOf<String?>(null)
     var canGoBack by mutableStateOf(false)
     var canGoForward by mutableStateOf(false)
+    var siteHost by mutableStateOf("")
+    var blockingLevel by mutableStateOf(BlockingLevel.STANDARD)
+    @Volatile var requestBlockingLevel: BlockingLevel = BlockingLevel.STANDARD
 
     fun destroy() {
         (webView.parent as? ViewGroup)?.removeView(webView)
@@ -84,7 +92,10 @@ class BrowserActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             PrivateBrowserTheme {
-                BrowserScreen(intent.getStringExtra(EXTRA_PROFILE_NAME).orEmpty()) { finishAndRemoveTask() }
+                BrowserScreen(
+                    profileId = profileId,
+                    profileName = intent.getStringExtra(EXTRA_PROFILE_NAME).orEmpty(),
+                ) { finishAndRemoveTask() }
             }
         }
     }
@@ -109,16 +120,19 @@ class BrowserActivity : ComponentActivity() {
 }
 
 @Composable
-private fun BrowserScreen(profileName: String, closeProfile: () -> Unit) {
+private fun BrowserScreen(profileId: String, profileName: String, closeProfile: () -> Unit) {
     val context = LocalContext.current
-    val tabs = remember { mutableStateListOf(createWebView(context, 1L)) }
+    val blockingPreferences = remember(profileId) { SiteBlockingPreferences(context, profileId) }
+    val tabs = remember { mutableStateListOf(createWebView(context, 1L, blockingPreferences)) }
     var selectedId by remember { mutableStateOf<Long?>(1L) }
     var addressInput by remember { mutableStateOf(HOME_URL) }
     var nextId by remember { mutableStateOf(2L) }
+    var showSiteControls by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
 
     fun addTab() {
         tabs.firstOrNull { it.id == selectedId }?.webView?.onPause()
-        val tab = createWebView(context, nextId++)
+        val tab = createWebView(context, nextId++, blockingPreferences)
         tabs += tab
         selectedId = tab.id
         addressInput = HOME_URL
@@ -155,44 +169,88 @@ private fun BrowserScreen(profileName: String, closeProfile: () -> Unit) {
         if (current.canGoBack) current.webView.goBack() else closeProfile()
     }
 
+    if (showSiteControls) {
+        AlertDialog(
+            onDismissRequest = { showSiteControls = false },
+            title = { Text("このサイトのブロック設定") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(current.siteHost.ifBlank { "サイトを読み込み中" })
+                    BlockingLevel.entries.forEach { level ->
+                        Row(Modifier.fillMaxWidth()) {
+                            RadioButton(
+                                selected = current.blockingLevel == level,
+                                onClick = {
+                                    current.blockingLevel = level
+                                    current.requestBlockingLevel = level
+                                    if (current.siteHost.isNotBlank()) {
+                                        blockingPreferences.setLevel(current.siteHost, level)
+                                    }
+                                    showSiteControls = false
+                                    current.webView.reload()
+                                },
+                            )
+                            Column {
+                                Text(level.label)
+                                if (level == BlockingLevel.STRICT) Text("サイトが壊れる可能性があります")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton({ showSiteControls = false }) { Text("閉じる") } },
+        )
+    }
+    if (showMenu) {
+        AlertDialog(
+            onDismissRequest = { showMenu = false },
+            title = { Text("ブラウザメニュー") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("サイト別ブロック: ${current.blockingLevel.label}")
+                    Text("パスワード保存: 未実装")
+                    Text("安全なKeystore設計と認証UIが完成するまで、パスワードは保存しません。")
+                }
+            },
+            confirmButton = { TextButton({ showMenu = false }) { Text("閉じる") } },
+        )
+    }
+
     Scaffold(topBar = {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("$profileName · ${current.title}", maxLines = 1, modifier = Modifier.weight(1f))
-                TextButton(onClick = closeProfile) { Text("プロフィール") }
-            }
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 tabs.forEachIndexed { index, tab ->
                     OutlinedButton(onClick = { select(tab) }) {
-                        Text("${if (tab.id == current.id) "● " else ""}${index + 1}")
+                        Text("${if (tab.id == current.id) "● " else ""}${index + 1} ${tab.title.take(14)}", maxLines = 1)
                     }
                     TextButton(onClick = { close(tab) }) { Text("×") }
                 }
-                Button(onClick = { addTab() }) { Text("＋ 新規") }
+                Button(onClick = { addTab() }) { Text("＋") }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton({ current.webView.goBack() }, enabled = current.canGoBack) { Text("‹") }
+                TextButton({ current.webView.goForward() }, enabled = current.canGoForward) { Text("›") }
+                TextButton({ current.webView.loadUrl(HOME_URL) }) { Text("⌂") }
                 OutlinedTextField(
                     value = addressInput,
                     onValueChange = { addressInput = it },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
-                    label = { Text("URL または検索語") },
+                    placeholder = { Text("URL または検索語") },
                 )
-                Button(onClick = { current.webView.loadUrl(normalizeUrl(addressInput)) }) { Text("移動") }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                TextButton({ current.webView.goBack() }, enabled = current.canGoBack) { Text("← 戻る") }
-                TextButton({ current.webView.goForward() }, enabled = current.canGoForward) { Text("進む →") }
+                Button(onClick = { current.webView.loadUrl(normalizeUrl(addressInput)) }) { Text("→") }
                 TextButton({ if (current.progress in 1..99) current.webView.stopLoading() else current.webView.reload() }) {
-                    Text(if (current.progress in 1..99) "停止" else "再読込")
+                    Text(if (current.progress in 1..99) "×" else "↻")
                 }
-                TextButton({ current.webView.loadUrl(HOME_URL) }) { Text("ホーム") }
+                TextButton({ showSiteControls = true }) { Text("盾 ${current.blockingLevel.label}") }
+                TextButton({ showMenu = true }) { Text("⋮") }
+                TextButton(closeProfile) { Text(profileName) }
             }
             if (!current.url.startsWith("https://")) {
                 Text("安全な HTTPS 接続ではありません", color = MaterialTheme.colorScheme.error)
@@ -229,13 +287,23 @@ private fun BrowserScreen(profileName: String, closeProfile: () -> Unit) {
 }
 
 @SuppressLint("SetJavaScriptEnabled")
-private fun createWebView(context: Context, id: Long): BrowserTab {
+private fun createWebView(
+    context: Context,
+    id: Long,
+    blockingPreferences: SiteBlockingPreferences,
+): BrowserTab {
     lateinit var tab: BrowserTab
     val webView = WebView(context).apply {
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.allowFileAccess = false
         settings.allowContentAccess = false
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        settings.useWideViewPort = true
+        settings.loadWithOverviewMode = false
+        settings.javaScriptCanOpenWindowsAutomatically = true
+        settings.setSupportMultipleWindows(false)
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
     }
@@ -243,6 +311,9 @@ private fun createWebView(context: Context, id: Long): BrowserTab {
     webView.webViewClient = object : WebViewClient() {
         override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
             tab.url = url
+            tab.siteHost = LocalRequestBlocker.host(url)
+            tab.blockingLevel = blockingPreferences.level(tab.siteHost)
+            tab.requestBlockingLevel = tab.blockingLevel
             tab.error = null
             tab.canGoBack = view.canGoBack()
             tab.canGoForward = view.canGoForward()
@@ -257,6 +328,20 @@ private fun createWebView(context: Context, id: Long): BrowserTab {
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             if (request.isForMainFrame) tab.error = "ページを表示できません（${error.errorCode}）"
+        }
+
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            if (!request.isForMainFrame && LocalRequestBlocker.shouldBlock(request.url.toString(), tab.requestBlockingLevel)) {
+                return WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    204,
+                    "No Content",
+                    emptyMap(),
+                    ByteArrayInputStream(ByteArray(0)),
+                )
+            }
+            return null
         }
     }
     webView.webChromeClient = object : WebChromeClient() {
