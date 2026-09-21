@@ -21,21 +21,32 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,6 +60,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -216,62 +237,71 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
         )
     }
 
-    Scaffold(topBar = {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                tabs.forEachIndexed { index, tab ->
-                    OutlinedButton(onClick = { select(tab) }) {
-                        Text("${if (tab.id == current.id) "● " else ""}${index + 1} ${tab.title.take(14)}", maxLines = 1)
-                    }
-                    TextButton(onClick = { close(tab) }) { Text("×") }
-                }
-                Button(onClick = { addTab() }) { Text("＋") }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton({ current.webView.goBack() }, enabled = current.canGoBack) { Text("‹") }
-                TextButton({ current.webView.goForward() }, enabled = current.canGoForward) { Text("›") }
-                TextButton({ current.webView.loadUrl(HOME_URL) }) { Text("⌂") }
-                OutlinedTextField(
-                    value = addressInput,
-                    onValueChange = { addressInput = it },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    placeholder = { Text("URL または検索語") },
-                )
-                Button(onClick = { current.webView.loadUrl(normalizeUrl(addressInput)) }) { Text("→") }
-                TextButton({ if (current.progress in 1..99) current.webView.stopLoading() else current.webView.reload() }) {
-                    Text(if (current.progress in 1..99) "×" else "↻")
-                }
-                TextButton({ showSiteControls = true }) { Text("盾 ${current.blockingLevel.label}") }
-                TextButton({ showMenu = true }) { Text("⋮") }
-                TextButton(closeProfile) { Text(profileName) }
-            }
-            if (!current.url.startsWith("https://")) {
-                Text("安全な HTTPS 接続ではありません", color = MaterialTheme.colorScheme.error)
-            }
-            if (current.progress in 1..99) {
-                LinearProgressIndicator(
-                    progress = { current.progress / 100f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            current.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        }
-    }) { padding ->
-        key(current.id) {
-            AndroidView(
-                factory = {
-                    (current.webView.parent as? ViewGroup)?.removeView(current.webView)
-                    current.webView
+    Scaffold(
+        topBar = {
+            BrowserTopBar(
+                tab = current,
+                addressInput = addressInput,
+                onAddressChange = { addressInput = it },
+                onNavigate = { current.webView.loadUrl(normalizeUrl(addressInput)) },
+                onReload = {
+                    if (current.progress in 1..99) current.webView.stopLoading() else current.webView.reload()
                 },
-                modifier = Modifier.fillMaxSize().padding(padding),
+                onSiteControls = { showSiteControls = true },
+                onMenu = { showMenu = true },
             )
+        },
+        bottomBar = {
+            SleipnirTabShelf(
+                tabs = tabs,
+                selectedId = current.id,
+                onSelect = ::select,
+                onClose = ::close,
+                onAdd = ::addTab,
+                canGoBack = current.canGoBack,
+                canGoForward = current.canGoForward,
+                onBack = { current.webView.goBack() },
+                onForward = { current.webView.goForward() },
+                onHome = { current.webView.loadUrl(HOME_URL) },
+            )
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            key(current.id) {
+                AndroidView(
+                    factory = {
+                        (current.webView.parent as? ViewGroup)?.removeView(current.webView)
+                        current.webView
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            Column(Modifier.fillMaxWidth().align(Alignment.TopCenter)) {
+                if (!current.url.startsWith("https://")) {
+                    Text(
+                        "安全な HTTPS 接続ではありません",
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.errorContainer)
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
+                if (current.progress in 1..99) {
+                    LinearProgressIndicator(
+                        progress = { current.progress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                current.error?.let {
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.errorContainer)
+                            .padding(8.dp),
+                    )
+                }
+            }
         }
     }
 
@@ -283,6 +313,155 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
                 it.destroy()
             }
         }
+    }
+}
+
+@Composable
+private fun BrowserTopBar(
+    tab: BrowserTab,
+    addressInput: String,
+    onAddressChange: (String) -> Unit,
+    onNavigate: () -> Unit,
+    onReload: () -> Unit,
+    onSiteControls: () -> Unit,
+    onMenu: () -> Unit,
+) {
+    Surface(shadowElevation = 3.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ToolbarKey("☆", "ブックマーク（未実装）", onClick = {})
+            OutlinedTextField(
+                value = addressInput,
+                onValueChange = onAddressChange,
+                modifier = Modifier.weight(1f).padding(vertical = 6.dp),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { onNavigate() }),
+                leadingIcon = {
+                    Text(if (tab.url.startsWith("https://")) "●" else "!", color = if (tab.url.startsWith("https://")) Color(0xFF1687B8) else MaterialTheme.colorScheme.error)
+                },
+                placeholder = { Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            )
+            ToolbarKey(if (tab.progress in 1..99) "×" else "↻", "再読み込み／停止", onReload)
+            ToolbarKey("盾", "サイト別ブロック", onSiteControls)
+            ToolbarKey("⋮", "メニュー", onMenu)
+        }
+    }
+}
+
+@Composable
+private fun ToolbarKey(label: String, description: String, onClick: () -> Unit, enabled: Boolean = true) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(4.dp),
+        modifier = Modifier.size(48.dp).semantics { contentDescription = description },
+    ) {
+        Text(label, style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+    }
+}
+
+private val tabColors = listOf(
+    Color(0xFF91B8E9), Color(0xFFA7C5E3), Color(0xFFD5B2E6),
+    Color(0xFFB9DEBE), Color(0xFFFFC0AB), Color(0xFFFFE38C),
+)
+
+@Composable
+private fun SleipnirTabShelf(
+    tabs: List<BrowserTab>,
+    selectedId: Long,
+    onSelect: (BrowserTab) -> Unit,
+    onClose: (BrowserTab) -> Unit,
+    onAdd: () -> Unit,
+    canGoBack: Boolean,
+    canGoForward: Boolean,
+    onBack: () -> Unit,
+    onForward: () -> Unit,
+    onHome: () -> Unit,
+) {
+    Surface(shadowElevation = 8.dp) {
+        Column(Modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth().height(3.dp).background(Color(0xFF10A9DF)))
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                tabs.forEachIndexed { index, tab ->
+                    TabTile(
+                        tab = tab,
+                        selected = tab.id == selectedId,
+                        color = tabColors[index % tabColors.size],
+                        onSelect = { onSelect(tab) },
+                        onClose = { onClose(tab) },
+                    )
+                }
+                AddTabTile(onAdd)
+            }
+            HorizontalDivider()
+            Row(
+                Modifier.fillMaxWidth().height(48.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ToolbarKey("‹", "戻る", onBack, enabled = canGoBack)
+                Spacer(Modifier.width(12.dp))
+                ToolbarKey("⌂", "ホーム", onHome)
+                Spacer(Modifier.width(12.dp))
+                ToolbarKey("›", "進む", onForward, enabled = canGoForward)
+                Spacer(Modifier.weight(1f))
+                Text("タブ ${tabs.indexOfFirst { it.id == selectedId } + 1} / ${tabs.size}", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.width(12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabTile(
+    tab: BrowserTab,
+    selected: Boolean,
+    color: Color,
+    onSelect: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.width(if (selected) 200.dp else 176.dp).height(66.dp).padding(end = 3.dp),
+        colors = CardDefaults.cardColors(containerColor = if (selected) color else color.copy(alpha = 0.72f)),
+        elevation = CardDefaults.cardElevation(if (selected) 5.dp else 0.dp),
+    ) {
+        Row(
+            Modifier.fillMaxSize().clickable(onClick = onSelect).padding(start = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(if (selected) "●" else "○", color = Color(0xFF087EAE), style = MaterialTheme.typography.labelSmall)
+                Text(
+                    tab.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (color.luminance() > .45f) Color(0xFF202124) else Color.White,
+                )
+            }
+            TextButton(onClick = onClose, contentPadding = PaddingValues(0.dp), modifier = Modifier.size(40.dp)) {
+                Text("×", style = MaterialTheme.typography.titleLarge)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddTabTile(onAdd: () -> Unit) {
+    Box(
+        modifier = Modifier.width(92.dp).height(66.dp)
+            .background(Color(0xFF9EDCF2))
+            .clickable(onClick = onAdd),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("＋", color = Color(0xFF008EC4), style = MaterialTheme.typography.headlineMedium)
     }
 }
 
