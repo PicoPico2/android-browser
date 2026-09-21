@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Process
 import android.view.ViewGroup
+import android.view.KeyEvent
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
@@ -36,6 +37,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -102,6 +110,9 @@ private class BrowserTab(val id: Long, val webView: WebView) {
 }
 
 class BrowserActivity : ComponentActivity() {
+    internal lateinit var platform: BrowserPlatform
+    internal var shortcutHandler: ((KeyEvent) -> Boolean)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val profileId = requireNotNull(intent.getStringExtra(EXTRA_PROFILE_ID))
         val suffix = profileSuffix(profileId)
@@ -111,6 +122,7 @@ class BrowserActivity : ComponentActivity() {
         }
         check(configuredSuffix == suffix) { "A browser process cannot switch profiles" }
         super.onCreate(savedInstanceState)
+        platform = BrowserPlatform(this)
         setContent {
             PrivateBrowserTheme {
                 BrowserScreen(
@@ -122,10 +134,25 @@ class BrowserActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        shortcutHandler = null
+        if (::platform.isInitialized) platform.dispose()
         super.onDestroy()
         // A profile owns this dedicated process. End it only when explicitly leaving the profile;
         // configuration changes are handled by Compose disposal without killing the new Activity.
         if (isFinishing) Process.killProcess(Process.myPid())
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            if (platform.isFullscreen) {
+                if (event.keyCode == KeyEvent.KEYCODE_ESCAPE || event.keyCode == KeyEvent.KEYCODE_BACK) {
+                    return platform.hideFullscreen()
+                }
+                return super.dispatchKeyEvent(event)
+            }
+            if (shortcutHandler?.invoke(event) == true) return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     companion object {
@@ -143,20 +170,27 @@ class BrowserActivity : ComponentActivity() {
 @Composable
 private fun BrowserScreen(profileId: String, profileName: String, closeProfile: () -> Unit) {
     val context = LocalContext.current
+    val activity = context as BrowserActivity
+    val platform = activity.platform
+    val addressFocus = remember { FocusRequester() }
     val blockingPreferences = remember(profileId) { SiteBlockingPreferences(context, profileId) }
-    val tabs = remember { mutableStateListOf(createWebView(context, 1L, blockingPreferences)) }
+    val tabs = remember { mutableStateListOf(createWebView(context, 1L, blockingPreferences, platform)) }
     var selectedId by remember { mutableStateOf<Long?>(1L) }
     var addressInput by remember { mutableStateOf(HOME_URL) }
     var nextId by remember { mutableStateOf(2L) }
     var showSiteControls by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showTabs by remember { mutableStateOf(false) }
 
-    fun addTab() {
-        tabs.firstOrNull { it.id == selectedId }?.webView?.onPause()
-        val tab = createWebView(context, nextId++, blockingPreferences)
+    fun addTab(url: String = HOME_URL, foreground: Boolean = true) {
+        if (foreground) tabs.firstOrNull { it.id == selectedId }?.webView?.onPause()
+        val tab = createWebView(context, nextId++, blockingPreferences, platform, url)
         tabs += tab
-        selectedId = tab.id
-        addressInput = HOME_URL
+        if (foreground) {
+            selectedId = tab.id
+            addressInput = url
+            tab.webView.onResume()
+        } else tab.webView.onPause()
     }
 
     val selectedIndex = tabs.indexOfFirst { it.id == selectedId }.coerceAtLeast(0)
@@ -187,7 +221,56 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
     }
 
     BackHandler {
-        if (current.canGoBack) current.webView.goBack() else closeProfile()
+        if (!platform.hideFullscreen()) {
+            if (current.webView.canGoBack()) current.webView.goBack() else closeProfile()
+        }
+    }
+
+    androidx.compose.runtime.SideEffect {
+        platform.openLink = { url, foreground -> addTab(url, foreground) }
+        activity.shortcutHandler = { event ->
+            when {
+                event.isAltPressed && event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (current.webView.canGoBack()) current.webView.goBack()
+                    true
+                }
+                event.isAltPressed && event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (current.webView.canGoForward()) current.webView.goForward()
+                    true
+                }
+                event.isCtrlPressed && event.keyCode == KeyEvent.KEYCODE_T -> { addTab(); true }
+                event.isCtrlPressed && event.keyCode == KeyEvent.KEYCODE_W -> { close(current); true }
+                event.isCtrlPressed && event.keyCode == KeyEvent.KEYCODE_L -> { addressFocus.requestFocus(); true }
+                event.isCtrlPressed && event.keyCode == KeyEvent.KEYCODE_TAB -> {
+                    val step = if (event.isShiftPressed) -1 else 1
+                    select(tabs[(selectedIndex + step + tabs.size) % tabs.size]); true
+                }
+                (event.isCtrlPressed && event.keyCode == KeyEvent.KEYCODE_R) || event.keyCode == KeyEvent.KEYCODE_F5 -> {
+                    current.webView.reload(); true
+                }
+                else -> false
+            }
+        }
+    }
+
+    if (showTabs) {
+        AlertDialog(
+            onDismissRequest = { showTabs = false },
+            title = { Text("タブ一覧（グループ列は次段階）") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    tabs.forEachIndexed { index, tab ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { select(tab); showTabs = false }, modifier = Modifier.weight(1f)) {
+                                Text("${if (tab.id == selectedId) "●" else "○"} ${index + 1}: ${tab.title}", maxLines = 2)
+                            }
+                            TextButton(onClick = { close(tab) }) { Text("×") }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { addTab(); showTabs = false }) { Text("新規タブ") } },
+        )
     }
 
     if (showSiteControls) {
@@ -237,8 +320,13 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
         )
     }
 
+    val systemPadding = WindowInsets.systemBars.asPaddingValues()
     Scaffold(
+        modifier = Modifier.imePadding(),
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
+            Column {
+            Spacer(Modifier.height(systemPadding.calculateTopPadding()))
             BrowserTopBar(
                 tab = current,
                 addressInput = addressInput,
@@ -249,24 +337,26 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
                 },
                 onSiteControls = { showSiteControls = true },
                 onMenu = { showMenu = true },
+                addressFocus = addressFocus,
             )
+            }
         },
         bottomBar = {
-            SleipnirTabShelf(
-                tabs = tabs,
-                selectedId = current.id,
-                onSelect = ::select,
-                onClose = ::close,
-                onAdd = ::addTab,
-                canGoBack = current.canGoBack,
-                canGoForward = current.canGoForward,
-                onBack = { current.webView.goBack() },
-                onForward = { current.webView.goForward() },
-                onHome = { current.webView.loadUrl(HOME_URL) },
-            )
+            // Preserve the original shelf's 3 + 66 + 1 + 48 dp reservation, empty.
+            val bottom = maxOf(118.dp, systemPadding.calculateBottomPadding())
+            Spacer(Modifier.fillMaxWidth().height(bottom))
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Row(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.width(56.dp).verticalScroll(rememberScrollState())) {
+                ToolbarKey("‹", "戻る", { current.webView.goBack() }, current.canGoBack)
+                ToolbarKey("›", "進む", { current.webView.goForward() }, current.canGoForward)
+                ToolbarKey("↻", "更新／停止", {
+                    if (current.progress in 1..99) current.webView.stopLoading() else current.webView.reload()
+                })
+                ToolbarKey("⌂", "ホーム", { current.webView.loadUrl(HOME_URL) })
+            }
+        Box(Modifier.weight(1f).fillMaxSize()) {
             key(current.id) {
                 AndroidView(
                     factory = {
@@ -303,11 +393,20 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
                 }
             }
         }
+            Column(Modifier.width(56.dp).verticalScroll(rememberScrollState())) {
+                ToolbarKey("＋", "新規タブ", { addTab() })
+                ToolbarKey("▤", "タブ一覧", { showTabs = true })
+                ToolbarKey("盾", "サイト別ブロック", { showSiteControls = true })
+                ToolbarKey("⋮", "メニュー", { showMenu = true })
+            }
+        }
     }
 
     LaunchedEffect(current.id, current.url) { addressInput = current.url }
     DisposableEffect(Unit) {
         onDispose {
+            activity.shortcutHandler = null
+            platform.openLink = null
             tabs.toList().forEach {
                 it.webView.onPause()
                 it.destroy()
@@ -325,17 +424,18 @@ private fun BrowserTopBar(
     onReload: () -> Unit,
     onSiteControls: () -> Unit,
     onMenu: () -> Unit,
+    addressFocus: FocusRequester,
 ) {
     Surface(shadowElevation = 3.dp) {
         Row(
             modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ToolbarKey("☆", "ブックマーク（未実装）", onClick = {})
+            Spacer(Modifier.width(48.dp))
             OutlinedTextField(
                 value = addressInput,
                 onValueChange = onAddressChange,
-                modifier = Modifier.weight(1f).padding(vertical = 6.dp),
+                modifier = Modifier.weight(1f).padding(vertical = 6.dp).focusRequester(addressFocus),
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyLarge,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -345,9 +445,7 @@ private fun BrowserTopBar(
                 },
                 placeholder = { Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             )
-            ToolbarKey(if (tab.progress in 1..99) "×" else "↻", "再読み込み／停止", onReload)
-            ToolbarKey("盾", "サイト別ブロック", onSiteControls)
-            ToolbarKey("⋮", "メニュー", onMenu)
+            Spacer(Modifier.width(144.dp))
         }
     }
 }
@@ -470,6 +568,8 @@ private fun createWebView(
     context: Context,
     id: Long,
     blockingPreferences: SiteBlockingPreferences,
+    platform: BrowserPlatform,
+    initialUrl: String = HOME_URL,
 ): BrowserTab {
     lateinit var tab: BrowserTab
     val webView = WebView(context).apply {
@@ -481,13 +581,21 @@ private fun createWebView(
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = false
-        settings.javaScriptCanOpenWindowsAutomatically = true
+        settings.javaScriptCanOpenWindowsAutomatically = false
         settings.setSupportMultipleWindows(false)
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
     }
     tab = BrowserTab(id, webView)
     webView.webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+            platform.handleNavigation(view, request)
+
+        override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+            if (url != null) tab.url = url
+            tab.canGoBack = view.canGoBack()
+            tab.canGoForward = view.canGoForward()
+        }
         override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
             tab.url = url
             tab.siteHost = LocalRequestBlocker.host(url)
@@ -524,6 +632,17 @@ private fun createWebView(
         }
     }
     webView.webChromeClient = object : WebChromeClient() {
+        override fun onShowCustomView(view: android.view.View, callback: CustomViewCallback) =
+            platform.showFullscreen(view, callback)
+
+        override fun onHideCustomView() { platform.hideFullscreen() }
+
+        override fun onShowFileChooser(
+            view: WebView,
+            callback: android.webkit.ValueCallback<Array<Uri>>,
+            params: FileChooserParams,
+        ): Boolean = platform.chooseFiles(callback, params)
+
         override fun onProgressChanged(view: WebView, newProgress: Int) {
             // Quantizing progress avoids up to 100 whole toolbar recompositions per navigation.
             val displayed = if (newProgress == 100) 100 else (newProgress / 5) * 5
@@ -543,7 +662,8 @@ private fun createWebView(
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
         (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
     }
-    webView.loadUrl(HOME_URL)
+    platform.installLinkMenu(webView)
+    webView.loadUrl(initialUrl)
     return tab
 }
 
