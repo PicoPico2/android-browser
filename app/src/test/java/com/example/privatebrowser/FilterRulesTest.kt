@@ -12,7 +12,7 @@ class FilterRulesTest {
         assertFalse(rules.blocks("https://ads.example.com.evil.test/a"))
     }
     @Test fun doesNotBroadenUnsupportedRule() {
-        val rules = FilterRules.parse(sequenceOf("||example.com/ad*", "||example.com^\$script"))
+        val rules = FilterRules.parse(sequenceOf("||example.com^\$redirect=noopjs", "||example.com^\$third-party"))
         assertFalse(rules.blocks("https://example.com/"))
         assertEquals(2, rules.skipped)
     }

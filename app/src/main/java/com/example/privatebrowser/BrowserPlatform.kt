@@ -32,7 +32,12 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
     private var oldStatusVisible = true
     private var oldNavigationVisible = true
     private var oldBehavior = 0
+    private val desktopViews = java.util.WeakHashMap<WebView, String>()
+    private val imageSearchViews = java.util.WeakHashMap<WebView, String>()
+    private val imageOverview = java.util.WeakHashMap<WebView, Boolean>()
+    private val resourceErrors = java.util.WeakHashMap<WebView, MutableList<String>>()
     private val recentFallbacks = java.util.WeakHashMap<WebView, Pair<Long, Int>>()
+    var rendererLost: ((WebView) -> Unit)? = null
     var openLink: ((String, Boolean) -> Unit)? = null
     val isFullscreen: Boolean get() = fullView != null
 
@@ -99,19 +104,41 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
         if (oldNavigationVisible) controller.show(WindowInsetsCompat.Type.navigationBars())
         else controller.hide(WindowInsetsCompat.Type.navigationBars())
         callback?.onCustomViewHidden()
+        activity.window.decorView.requestLayout()
+        activity.window.decorView.invalidate()
         return true
     }
 
     fun handleNavigation(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url
-        if (uri.scheme.equals("https", true) || uri.scheme.equals("http", true)) return false
+        if (uri.scheme.equals("https", true) || uri.scheme.equals("http", true)) {
+            if (request.isForMainFrame && (imageSearchViews.containsKey(view) || isImageSearchContext(view.url.orEmpty())) && isAppDownloadUrl(uri.toString())) {
+                if (!imageSearchViews.containsKey(view)) openImageSearch(view)
+                else message("アプリ案内への移動を停止しました。Web版の画像検索を使ってください")
+                return true
+            }
+            if (request.isForMainFrame && imageSearchViews.containsKey(view) && !isGoogleWebHost(uri.host.orEmpty())) {
+                imageSearchViews.remove(view)?.let { view.settings.userAgentString = it }
+                imageOverview.remove(view)?.let { view.settings.loadWithOverviewMode = it }
+            }
+            return false
+        }
         if (uri.scheme.equals("about", true)) return false
         if (!request.isForMainFrame) return true
         if (uri.scheme.equals("intent", true)) {
-            val fallback = runCatching {
-                Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
-                    .getStringExtra("browser_fallback_url")
-            }.getOrNull()
+            val parsed = runCatching { Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME) }.getOrNull()
+            val fallback = parsed?.getStringExtra("browser_fallback_url")
+            val googleApp = parsed?.`package` in setOf("com.google.android.googlequicksearchbox", "com.google.ar.lens") ||
+                uri.host == "search.app.goo.gl"
+            if (googleApp && (isImageSearchContext(view.url.orEmpty()) || fallback == null || isAppDownloadUrl(fallback))) {
+                if (imageSearchViews.containsKey(view)) message("アプリへの誘導を停止しました。Web版のカメラボタンを選んでください")
+                else openImageSearch(view)
+                return true
+            }
+            if (fallback != null && isAppDownloadUrl(fallback)) {
+                message("アプリのダウンロードページへの移動を停止しました")
+                return true
+            }
             // parseUri already decodes extras. Do not URL-decode a second time.
             if (fallback != null && safeHttpsFallback(fallback)) {
                 val now = android.os.SystemClock.elapsedRealtime()
@@ -125,6 +152,80 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
         }
         message("外部アプリへの移動を停止しました。Web版のリンクを使用してください")
         return true
+    }
+
+    private fun desktopAgent(original: String): String = original
+        .replaceFirst(Regex("\\([^)]*\\)"), "(X11; Linux x86_64)")
+        .replace("; wv", "").replace(" Version/4.0", "").replace(" Mobile", "")
+
+    fun toggleDesktop(view: WebView) {
+        hideFullscreen()
+        imageSearchViews.remove(view)?.let { view.settings.userAgentString = it }
+        imageOverview.remove(view)?.let { view.settings.loadWithOverviewMode = it }
+        val original = desktopViews.remove(view)
+        if (original != null) {
+            view.settings.userAgentString = original
+            view.settings.loadWithOverviewMode = false
+            message("モバイル表示")
+        } else {
+            desktopViews[view] = view.settings.userAgentString
+            view.settings.userAgentString = desktopAgent(view.settings.userAgentString)
+            view.settings.loadWithOverviewMode = true
+            message("PC表示。このタブだけに適用します")
+        }
+        view.requestLayout()
+        view.reload()
+    }
+
+    fun openImageSearch(view: WebView) {
+        hideFullscreen()
+        if (!imageSearchViews.containsKey(view)) {
+            imageSearchViews[view] = view.settings.userAgentString
+            imageOverview[view] = view.settings.loadWithOverviewMode
+        }
+        view.settings.loadWithOverviewMode = true
+        view.settings.userAgentString = desktopAgent(view.settings.userAgentString)
+        view.loadUrl("https://www.google.com/imghp?hl=ja")
+        message("カメラアイコンから「ファイルをアップロード」を選んでください")
+    }
+
+    fun openNicoWatchPage(view: WebView) {
+        val uri = Uri.parse(view.url.orEmpty())
+        val host = uri.host.orEmpty()
+        if (!FilterRules.domainMatches(host, "nicovideo.jp")) { message("ニコ動の動画ページで使ってください"); return }
+        val id = uri.pathSegments.lastOrNull().orEmpty()
+        if (!Regex("(?:sm|so|nm)?[0-9]+").matches(id)) { message("動画IDを確認できません"); return }
+        hideFullscreen()
+        view.loadUrl("https://www.nicovideo.jp/watch/$id")
+    }
+
+    fun noteError(view: WebView, request: WebResourceRequest, code: Int) {
+        val errors = resourceErrors.getOrPut(view) { mutableListOf() }
+        errors.add("${request.url.host.orEmpty()}: $code (${if (request.isForMainFrame) "ページ" else "リソース"})")
+        while (errors.size > 20) errors.removeAt(0)
+    }
+    fun showDiagnostics(view: WebView) {
+        view.evaluateJavascript("""
+            (function(){return JSON.stringify({
+                host:location.hostname,path:location.pathname,
+                viewport:[innerWidth,innerHeight],
+                documentSize:[document.documentElement.scrollWidth,document.documentElement.scrollHeight],
+                ready:document.readyState,fullscreen:!!document.fullscreenElement,
+                bodyOverflow:document.body?getComputedStyle(document.body).overflow:null,
+                videos:Array.from(document.querySelectorAll('video')).map(function(v){return {
+                    ready:v.readyState,network:v.networkState,error:v.error?v.error.code:null,paused:v.paused
+                }})
+            });})()
+        """.trimIndent()) { result ->
+            if (activity.isFinishing || activity.isDestroyed) return@evaluateJavascript
+            val text = "WebView: " + WebView.getCurrentWebViewPackage()?.versionName +
+                "\nUA: " + view.settings.userAgentString + "\n" + result +
+                "\n読み込みエラー（ホストとコードのみ）:\n" + resourceErrors[view].orEmpty().joinToString("\n")
+            android.app.AlertDialog.Builder(activity).setTitle("表示診断").setMessage(text)
+                .setPositiveButton("コピー") { _, _ ->
+                    (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("表示診断", text))
+                }.setNegativeButton("閉じる", null).show()
+        }
     }
 
     fun installLinkMenu(view: WebView) {
@@ -213,6 +314,7 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
     private fun message(text: String) = Toast.makeText(activity, text, Toast.LENGTH_SHORT).show()
 
     fun dispose() {
+        rendererLost = null
         openLink = null
         fileCallback?.onReceiveValue(null)
         fileCallback = null
@@ -223,4 +325,20 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
 internal fun safeHttpsFallback(url: String): Boolean = runCatching {
     val uri = java.net.URI(url)
     uri.scheme.equals("https", true) && !uri.host.isNullOrBlank() && uri.userInfo == null
+}.getOrDefault(false)
+
+internal fun isGoogleWebHost(host: String): Boolean = listOf("google.com", "google.co.jp").any { FilterRules.domainMatches(host.lowercase(), it) }
+internal fun isAppDownloadUrl(url: String): Boolean = runCatching {
+    val uri = java.net.URI(url)
+    val host = uri.host.orEmpty().lowercase()
+    host == "play.google.com" || host == "apps.apple.com" || host == "itunes.apple.com" ||
+        (host == "google.com" || host == "www.google.com") && uri.path.orEmpty().startsWith("/intl/") && uri.path.orEmpty().contains("/search/about")
+}.getOrDefault(false)
+
+internal fun isImageSearchContext(url: String): Boolean = runCatching {
+    val uri = java.net.URI(url)
+    val host = uri.host.orEmpty().lowercase()
+    val query = uri.rawQuery.orEmpty().split('&')
+    host == "lens.google.com" || isGoogleWebHost(host) &&
+        (uri.path.orEmpty().startsWith("/imghp") || "tbm=isch" in query || "udm=2" in query)
 }.getOrDefault(false)
