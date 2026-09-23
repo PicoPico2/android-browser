@@ -12,8 +12,9 @@ internal data class SavedTab(val id: Long, val url: String, val title: String)
 internal data class TabSession(val tabs: List<SavedTab>, val selected: Long, val closed: List<SavedTab>)
 
 /** Profile-scoped atomic snapshots. No cookies or passwords in this file. */
-internal class TabSessionStore(context: Context, profileId: String) {
-    private val file = AtomicFile(File(context.filesDir, "tabs_${BrowserActivity.profileSuffix(profileId)}.json"))
+internal class TabSessionStore(context: Context, profileId: String, windowId: String = "primary") {
+    private val windowSuffix = BrowserActivity.profileSuffix(windowId)
+    private val file = AtomicFile(File(context.filesDir, "tabs_${BrowserActivity.profileSuffix(profileId)}_$windowSuffix.json"))
     private val worker = Executors.newSingleThreadExecutor()
     private var lastQueued = ""
     @Volatile var error: String? = null

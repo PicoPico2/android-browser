@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const kotlin = fs.readFileSync(path.join(__dirname, '../app/src/main/java/com/example/privatebrowser/PageScripts.kt'), 'utf8');
 const source = kotlin.match(/val youtube = """([\s\S]*?)"""\.trimIndent/)[1];
+assert(source.includes('ad-showing,.html5-video-player.ad-interrupting'));
+assert(source.includes('setInterval(tick,250)'));
 let cases=0;
 function run({host='www.youtube.com',ad=false,duration=30,skip=false,hidden=false}={}){
  let seeks=0,clicks=0,intervals=0,clears=0,removed=0,position=0;

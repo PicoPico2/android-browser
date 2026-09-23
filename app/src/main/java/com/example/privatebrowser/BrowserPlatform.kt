@@ -32,7 +32,9 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
     private var oldStatusVisible = true
     private var oldNavigationVisible = true
     private var oldBehavior = 0
-    private val desktopViews = java.util.WeakHashMap<WebView, String>()
+    private val baseAgents = java.util.WeakHashMap<WebView, String>()
+    private val manualDisplayViews = java.util.WeakHashMap<WebView, Boolean>()
+    private val defaultDesktopViews = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
     private val imageSearchViews = java.util.WeakHashMap<WebView, String>()
     private val imageOverview = java.util.WeakHashMap<WebView, Boolean>()
     private val resourceErrors = java.util.WeakHashMap<WebView, MutableList<String>>()
@@ -158,18 +160,33 @@ internal class BrowserPlatform(private val activity: ComponentActivity) {
         .replaceFirst(Regex("\\([^)]*\\)"), "(X11; Linux x86_64)")
         .replace("; wv", "").replace(" Version/4.0", "").replace(" Mobile", "")
 
+    fun applyDefaultDisplayMode(view: WebView, url: String) {
+        if (manualDisplayViews.containsKey(view) || imageSearchViews.containsKey(view)) return
+        val base = baseAgents.getOrPut(view) { view.settings.userAgentString }
+        val desktop = usesDesktopMode(url)
+        if (desktop && defaultDesktopViews.add(view)) {
+            view.settings.userAgentString = desktopAgent(base)
+            view.settings.loadWithOverviewMode = true
+        } else if (!desktop && defaultDesktopViews.remove(view)) {
+            view.settings.userAgentString = base
+            view.settings.loadWithOverviewMode = false
+        }
+    }
+
     fun toggleDesktop(view: WebView) {
         hideFullscreen()
         imageSearchViews.remove(view)?.let { view.settings.userAgentString = it }
         imageOverview.remove(view)?.let { view.settings.loadWithOverviewMode = it }
-        val original = desktopViews.remove(view)
-        if (original != null) {
-            view.settings.userAgentString = original
+        val base = baseAgents.getOrPut(view) { view.settings.userAgentString }
+        val currentlyDesktop = manualDisplayViews[view] ?: defaultDesktopViews.contains(view)
+        manualDisplayViews[view] = !currentlyDesktop
+        defaultDesktopViews.remove(view)
+        if (currentlyDesktop) {
+            view.settings.userAgentString = base
             view.settings.loadWithOverviewMode = false
             message("モバイル表示")
         } else {
-            desktopViews[view] = view.settings.userAgentString
-            view.settings.userAgentString = desktopAgent(view.settings.userAgentString)
+            view.settings.userAgentString = desktopAgent(base)
             view.settings.loadWithOverviewMode = true
             message("PC表示。このタブだけに適用します")
         }
@@ -328,6 +345,10 @@ internal fun safeHttpsFallback(url: String): Boolean = runCatching {
 }.getOrDefault(false)
 
 internal fun isGoogleWebHost(host: String): Boolean = listOf("google.com", "google.co.jp").any { FilterRules.domainMatches(host.lowercase(), it) }
+internal fun usesDesktopMode(url: String): Boolean {
+    val host = FilterRules.hostOf(url)
+    return FilterRules.domainMatches(host, "youtube.com") || FilterRules.domainMatches(host, "nicovideo.jp")
+}
 internal fun isAppDownloadUrl(url: String): Boolean = runCatching {
     val uri = java.net.URI(url)
     val host = uri.host.orEmpty().lowercase()

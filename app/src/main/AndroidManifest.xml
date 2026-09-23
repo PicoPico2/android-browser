@@ -12,6 +12,8 @@
         <activity
             android:name=".BrowserActivity"
             android:exported="false"
+            android:documentLaunchMode="always"
+            android:resizeableActivity="true"
             android:process=":browser" />
         <activity
             android:name=".MainActivity"

@@ -2,6 +2,17 @@ package com.example.privatebrowser
 
 /** Bundled, auditable scripts only; filter downloads cannot supply JavaScript. */
 internal object PageScripts {
+    val pauseMedia = """
+        (function(){document.querySelectorAll('video,audio').forEach(function(m){
+          if(!m.paused){m.dataset.privateBrowserResume='1';m.pause();}
+          else delete m.dataset.privateBrowserResume;
+        });})()
+    """.trimIndent()
+    val resumeMedia = """
+        (function(){document.querySelectorAll('video[data-private-browser-resume="1"],audio[data-private-browser-resume="1"]').forEach(function(m){
+          delete m.dataset.privateBrowserResume;var p=m.play();if(p&&p.catch)p.catch(function(){});
+        });})()
+    """.trimIndent()
     fun cosmetic(selectors: Set<String>): String {
         val array = org.json.JSONArray(selectors.take(3000).toList()).toString()
         return """
@@ -24,7 +35,7 @@ internal object PageScripts {
             var lastSeek=0, lastSource='', lastVideo=null, lastTime=-1;
             function tick(){
                 if(document.hidden)return;
-                var player=document.querySelector('.html5-video-player.ad-showing');
+                var player=document.querySelector('.html5-video-player.ad-showing,.html5-video-player.ad-interrupting');
                 if(!player){lastSource='';lastVideo=null;lastTime=-1;return;}
                 var button=player.querySelector('.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern');
                 if(button&&button.getClientRects().length&&!button.disabled){button.click();return;}
@@ -38,7 +49,7 @@ internal object PageScripts {
                     }
                 }
             }
-            var timer=setInterval(tick,750);
+            var timer=setInterval(tick,250);
             function stop(){clearInterval(timer);css.remove();delete window.__privateYoutubeAds;}
             window.__privateYoutubeAds={stop:stop};
             addEventListener('pagehide',stop,{once:true});tick();

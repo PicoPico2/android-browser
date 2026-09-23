@@ -20,4 +20,14 @@ class BrowserPlatformTest {
     @Test fun rejectsCleartext() = assertFalse(safeHttpsFallback("http://example.com"))
     @Test fun rejectsCredentials() = assertFalse(safeHttpsFallback("https://user:password@example.com"))
     @Test fun rejectsMissingHost() = assertFalse(safeHttpsFallback("https:///path"))
+    @Test fun defaultsYouTubeAndNiconicoToDesktop() {
+        assertTrue(usesDesktopMode("https://www.youtube.com/watch?v=1"))
+        assertTrue(usesDesktopMode("https://live.nicovideo.jp/watch/lv1"))
+        assertTrue(usesDesktopMode("https://sub.nicovideo.jp/path"))
+    }
+    @Test fun desktopDefaultsRespectHostBoundaries() {
+        assertFalse(usesDesktopMode("https://youtube.com.evil.test/"))
+        assertFalse(usesDesktopMode("https://notnicovideo.jp/"))
+        assertFalse(usesDesktopMode("https://example.com/"))
+    }
 }

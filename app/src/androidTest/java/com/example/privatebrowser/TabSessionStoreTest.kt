@@ -31,4 +31,19 @@ class TabSessionStoreTest {
             }
         }
     }
+
+    @Test fun separatesWindowsWithinOneProfile() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val profile = "window-test-" + java.util.UUID.randomUUID()
+        val first = TabSessionStore(context, profile, "first")
+        val second = TabSessionStore(context, profile, "second")
+        try {
+            first.save(TabSession(listOf(SavedTab(1, "https://example.com/one", "One")), 1, emptyList())); first.flush()
+            second.save(TabSession(listOf(SavedTab(2, "https://example.com/two", "Two")), 2, emptyList())); second.flush()
+            assertEquals(1L, first.read().selected)
+            assertEquals(2L, second.read().selected)
+        } finally {
+            first.dispose(); second.dispose()
+        }
+    }
 }

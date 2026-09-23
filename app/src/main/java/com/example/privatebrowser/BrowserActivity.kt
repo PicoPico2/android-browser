@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.os.Process
+import android.content.Intent
 import android.view.ViewGroup
 import android.view.KeyEvent
 import android.webkit.CookieManager
@@ -130,6 +131,8 @@ private class BrowserTab(val id: Long, val webView: WebView) {
 
     var pendingUrl: String? = null
     fun ensureLoaded() { pendingUrl?.let { pendingUrl = null; webView.loadUrl(it) } }
+    fun pauseSelectedMedia() = webView.evaluateJavascript(PageScripts.pauseMedia, null)
+    fun resumeSelectedMedia() = webView.evaluateJavascript(PageScripts.resumeMedia, null)
     fun capture() {
         if (webView.width <= 0 || webView.height <= 0) return
         thumbnail = runCatching {
@@ -171,12 +174,15 @@ class BrowserActivity : ComponentActivity() {
         }
         check(configuredSuffix == suffix) { "A browser process cannot switch profiles" }
         super.onCreate(savedInstanceState)
+        activeActivities.incrementAndGet()
         platform = BrowserPlatform(this)
+        val windowId = intent.getStringExtra(EXTRA_WINDOW_ID) ?: "primary"
         setContent {
             PrivateBrowserTheme {
                 BrowserScreen(
                     profileId = profileId,
                     profileName = intent.getStringExtra(EXTRA_PROFILE_NAME).orEmpty(),
+                    windowId = windowId,
                 ) { finishAndRemoveTask() }
             }
         }
@@ -186,10 +192,10 @@ class BrowserActivity : ComponentActivity() {
         persistSession?.invoke()
         shortcutHandler = null
         if (::platform.isInitialized) platform.dispose()
+        val lastActivity = activeActivities.decrementAndGet() == 0
         super.onDestroy()
-        // A profile owns this dedicated process. End it only when explicitly leaving the profile;
-        // configuration changes are handled by Compose disposal without killing the new Activity.
-        if (isFinishing) Process.killProcess(Process.myPid())
+        // Adjacent windows share this profile process. Never terminate a surviving window.
+        if (isFinishing && lastActivity && !isChangingConfigurations) Process.killProcess(Process.myPid())
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -223,7 +229,9 @@ class BrowserActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PROFILE_ID = "profile_id"
         const val EXTRA_PROFILE_NAME = "profile_name"
+        const val EXTRA_WINDOW_ID = "window_id"
         @Volatile private var configuredSuffix: String? = null
+        private val activeActivities = java.util.concurrent.atomic.AtomicInteger(0)
 
         internal fun profileSuffix(id: String): String = MessageDigest.getInstance("SHA-256")
             .digest(id.toByteArray())
@@ -234,7 +242,7 @@ class BrowserActivity : ComponentActivity() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BrowserScreen(profileId: String, profileName: String, closeProfile: () -> Unit) {
+private fun BrowserScreen(profileId: String, profileName: String, windowId: String, closeProfile: () -> Unit) {
     val context = LocalContext.current
     val activity = context as BrowserActivity
     val platform = activity.platform
@@ -243,7 +251,7 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
     val preferences = remember(profileId) { context.getSharedPreferences("ui_" + BrowserActivity.profileSuffix(profileId), Context.MODE_PRIVATE) }
     val filters = remember { FilterStore(context.applicationContext) }
     val blockingPreferences = remember(profileId) { SiteBlockingPreferences(context, profileId) }
-    val sessionStore = remember(profileId) { TabSessionStore(context.applicationContext, profileId) }
+    val sessionStore = remember(profileId, windowId) { TabSessionStore(context.applicationContext, profileId, windowId) }
     val restored = remember { sessionStore.read() }
     val tabs = remember {
         mutableStateListOf<BrowserTab>().apply {
@@ -297,6 +305,7 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
         platform.hideFullscreen()
         current.capture()
         tabs.filter { it.thumbnail != null }.sortedByDescending { it.lastUsed }.drop(24).forEach { it.thumbnail = null }
+        current.pauseSelectedMedia()
         current.webView.onPause()
     }
     fun select(tab: BrowserTab) {
@@ -307,6 +316,7 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
             addressInput = tab.url
             tab.ensureLoaded()
             tab.webView.onResume()
+            tab.resumeSelectedMedia()
         }
         expandedTabs = false
     }
@@ -330,6 +340,7 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
             addressInput = replacement.url
             replacement.lastUsed = android.os.SystemClock.elapsedRealtime()
             replacement.webView.onResume()
+            replacement.resumeSelectedMedia()
         }
         closedTabs.add(SavedTab(tab.id, tab.url, tab.title))
         while (closedTabs.size > 30) closedTabs.removeAt(0)
@@ -352,6 +363,15 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
         android.widget.Toast.makeText(context, "URLをコピーしました", android.widget.Toast.LENGTH_SHORT).show()
     }
     fun editAddress() { expandedTabs = false; addressInput = current.url; editing = true }
+    fun openAdjacentWindow() {
+        val adjacentId = java.util.UUID.randomUUID().toString()
+        context.startActivity(Intent(context, BrowserActivity::class.java).apply {
+            putExtra(BrowserActivity.EXTRA_PROFILE_ID, profileId)
+            putExtra(BrowserActivity.EXTRA_PROFILE_NAME, profileName)
+            putExtra(BrowserActivity.EXTRA_WINDOW_ID, adjacentId)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
+        })
+    }
     BackHandler {
         when {
             platform.hideFullscreen() -> Unit
@@ -490,6 +510,7 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
                         Switch(overlayAddress, onCheckedChange = { overlayAddress = it; preferences.edit().putBoolean("overlay_address", it).apply() })
                         Text("タップできない場合はオフに戻すか左のURLボタンを使ってください。")
                         Text("タブをプロフィール別に保存します。自動休止・削除は後続実装です。")
+                        TextButton(onClick = { openAdjacentWindow(); panel = "" }) { Text("隣に新しいウィンドウを開く") }
                         sessionStore.error?.let { Text(it) }
                         TextButton(onClick = { platform.toggleDesktop(current.webView); panel = "" }) { Text("このタブのPC／モバイル表示を切替") }
                         TextButton(onClick = { platform.openImageSearch(current.webView); panel = "" }) { Text("Google画像検索（Web版）") }
@@ -583,10 +604,25 @@ private fun BrowserScreen(profileId: String, profileName: String, closeProfile: 
                     ToolbarKey("＋", "新しいタブ", { addTab() })
                     LazyColumn(Modifier.weight(1f)) {
                     items(tabs, key = { it.id }) { tab ->
-                        TextButton(
-                            onClick = { current.capture(); finishEditing(); expandedTabs = true },
-                            modifier = Modifier.fillMaxWidth().height(56.dp),
-                            colors = androidx.compose.material3.ButtonDefaults.textButtonColors(containerColor = if (tab.id == current.id) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
+                        val threshold = with(LocalDensity.current) { 48.dp.toPx() }
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxWidth().height(56.dp)
+                                .background(if (tab.id == current.id) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                                .pointerInput(tab.id, selectedId) {
+                                    var distance = 0f
+                                    detectHorizontalDragGestures(
+                                        onDragStart = { distance = 0f },
+                                        onDragCancel = {},
+                                        onDragEnd = {
+                                            when {
+                                                distance > threshold -> close(tab)
+                                                distance < -threshold -> { select(tab); expandedTabs = true }
+                                            }
+                                        },
+                                        onHorizontalDrag = { change, amount -> distance += amount; change.consume() },
+                                    )
+                                }.clickable { select(tab) },
                         ) {
                             val icon = tab.icon
                             if (icon != null) Image(icon.asImageBitmap(), contentDescription = tab.title, modifier = Modifier.size(24.dp))
@@ -720,6 +756,7 @@ private fun createWebView(
     tab = BrowserTab(id, webView).apply { url = initialUrl; pendingUrl = if (loadImmediately) null else initialUrl }
     webView.webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            if (request.isForMainFrame) platform.applyDefaultDisplayMode(view, request.url.toString())
             if (request.isForMainFrame && blocks(request.url.toString())) {
                 tab.blockedCount.incrementAndGet()
                 tab.blockedNavigation = request.url.toString()
@@ -867,6 +904,7 @@ private fun createWebView(
         (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
     }
     platform.installLinkMenu(webView)
+    platform.applyDefaultDisplayMode(webView, initialUrl)
     if (loadImmediately) webView.loadUrl(initialUrl)
     return tab
 }

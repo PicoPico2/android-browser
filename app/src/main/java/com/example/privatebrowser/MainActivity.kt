@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
                     startActivity(Intent(this, BrowserActivity::class.java).apply {
                         putExtra(BrowserActivity.EXTRA_PROFILE_ID, profile.id)
                         putExtra(BrowserActivity.EXTRA_PROFILE_NAME, profile.name)
+                        putExtra(BrowserActivity.EXTRA_WINDOW_ID, "primary")
                     })
                 }
             }
