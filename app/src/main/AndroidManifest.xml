@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="false"
@@ -11,7 +14,23 @@
         android:usesCleartextTraffic="false">
         <activity
             android:name=".BrowserActivity"
+            android:documentLaunchMode="always"
             android:exported="false"
+            android:launchMode="standard"
+            android:maxRecents="8"
+            android:resizeableActivity="true"
+            android:process=":browser" />
+        <activity
+            android:name=".PlayerActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
+            android:exported="false"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:process=":browser" />
+        <service
+            android:name=".HlsExportService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
             android:process=":browser" />
         <activity
             android:name=".MainActivity"
