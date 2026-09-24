@@ -76,7 +76,9 @@ jobs:
             "build-tools;36.0.0"
 
       - name: Test and build debug APK
-        run: gradle testDebugUnitTest assembleDebug
+        run: |
+          node scripts/test-youtube.cjs
+          gradle testDebugUnitTest assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
