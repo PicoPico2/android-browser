@@ -132,7 +132,7 @@ private class BrowserTab(val id: Long, val webView: WebView) {
     @Volatile var isActive = false
     val detectedMedia = mutableStateListOf<DetectedMedia>()
 
-    fun setActive(active: Boolean) {
+    fun updateActiveState(active: Boolean) {
         isActive = active
         webView.evaluateJavascript(PageScripts.mediaGate(active), null)
     }
@@ -331,7 +331,7 @@ private fun BrowserScreen(profileId: String, profileName: String, windowId: Stri
         platform.hideFullscreen()
         current.capture()
         tabs.filter { it.thumbnail != null }.sortedByDescending { it.lastUsed }.drop(24).forEach { it.thumbnail = null }
-        current.setActive(false)
+        current.updateActiveState(false)
     }
     fun select(tab: BrowserTab) {
         if (tab.id != selectedId) {
@@ -341,7 +341,7 @@ private fun BrowserScreen(profileId: String, profileName: String, windowId: Stri
             addressInput = tab.url
             tab.ensureLoaded()
             tab.webView.onResume()
-            tab.setActive(true)
+            tab.updateActiveState(true)
         }
         expandedTabs = false
     }
@@ -353,8 +353,8 @@ private fun BrowserScreen(profileId: String, profileName: String, windowId: Stri
             selectedId = tab.id
             addressInput = url
             tab.webView.onResume()
-            tab.setActive(true)
-        } else tab.setActive(false)
+            tab.updateActiveState(true)
+        } else tab.updateActiveState(false)
     }
     fun close(tab: BrowserTab) {
         val index = tabs.indexOf(tab)
@@ -366,7 +366,7 @@ private fun BrowserScreen(profileId: String, profileName: String, windowId: Stri
             addressInput = replacement.url
             replacement.lastUsed = android.os.SystemClock.elapsedRealtime()
             replacement.webView.onResume()
-            replacement.setActive(true)
+            replacement.updateActiveState(true)
         }
         closedTabs.add(SavedTab(tab.id, tab.url, tab.title))
         while (closedTabs.size > 30) closedTabs.removeAt(0)
@@ -439,7 +439,7 @@ private fun BrowserScreen(profileId: String, profileName: String, windowId: Stri
     }
     LaunchedEffect(editing) { if (editing) addressFocus.requestFocus() }
     LaunchedEffect(current.id, current.url) { if (!editing) addressInput = current.url }
-    LaunchedEffect(current.id) { current.ensureLoaded(); current.setActive(true) }
+    LaunchedEffect(current.id) { current.ensureLoaded(); current.updateActiveState(true) }
     LaunchedEffect(expandedTabs, selectedId) {
         if (expandedTabs) tabs.indexOfFirst { it.id == selectedId }.takeIf { it >= 0 }?.let { expandedTabListState.scrollToItem(it) }
     }
