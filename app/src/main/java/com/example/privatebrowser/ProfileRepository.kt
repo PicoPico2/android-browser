@@ -24,8 +24,15 @@ class ProfileRepository(context: Context) {
         return profile
     }
 
+    fun lastUsedProfileId(): String? = preferences.getString(KEY_LAST_USED, null)
+
+    fun markUsed(profile: BrowserProfile) {
+        preferences.edit().putString(KEY_LAST_USED, profile.id).apply()
+    }
+
     companion object {
         private const val KEY_PROFILES = "profile_list"
+        private const val KEY_LAST_USED = "last_used_profile"
         private const val SEPARATOR = "\u001F"
     }
 }
