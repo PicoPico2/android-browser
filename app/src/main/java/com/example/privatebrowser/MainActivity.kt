@@ -33,8 +33,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val repository = ProfileRepository(this)
         setContent {
-            MaterialTheme {
+            PrivateBrowserTheme {
                 ProfileScreen(repository) { profile ->
+                    repository.markUsed(profile)
                     startActivity(Intent(this, BrowserActivity::class.java).apply {
                         putExtra(BrowserActivity.EXTRA_PROFILE_ID, profile.id)
                         putExtra(BrowserActivity.EXTRA_PROFILE_NAME, profile.name)
@@ -50,12 +51,13 @@ class MainActivity : ComponentActivity() {
 private fun ProfileScreen(repository: ProfileRepository, openProfile: (BrowserProfile) -> Unit) {
     var profiles by remember { mutableStateOf(repository.profiles()) }
     var name by remember { mutableStateOf("") }
+    val lastUsedId = remember(profiles) { repository.lastUsedProfileId() }
     Scaffold(topBar = { TopAppBar(title = { Text("端末内プロフィール") }) }) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("プロフィールごとにCookie・履歴・サイトデータを分離します。")
+            Text("使用する端末内プロフィールを選択してください。Webデータはプロフィールごとの領域に保存されます。")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = name,
@@ -74,10 +76,14 @@ private fun ProfileScreen(repository: ProfileRepository, openProfile: (BrowserPr
                     enabled = name.isNotBlank(),
                 ) { Text("作成") }
             }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (profiles.isEmpty()) Text("プロフィールがありません。名前を入力して作成してください。")
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 items(profiles, key = { it.id }) { profile ->
                     Card(onClick = { openProfile(profile) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(profile.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(20.dp))
+                        Column(Modifier.padding(20.dp)) {
+                            Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                            Text(if (profile.id == lastUsedId) "前回使用 · タップして開く" else "タップして開く")
+                        }
                     }
                 }
             }
